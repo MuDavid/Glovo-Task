@@ -1,6 +1,6 @@
 WITH
     CityGroup AS (
-        SELECT
+        SELECT DISTINCT
             city,
             CASE
                 WHEN city = 'Barcelona' THEN 'Group1'
@@ -13,88 +13,104 @@ WITH
     ),
     LastWeekOrders AS (
         SELECT
-            city_group,
+            c.city_group,
             COUNT(*) AS last_week_orders
         FROM
-            CityGroup
+            Orders o
+            JOIN CityGroup c ON o.city = c.city
         WHERE
-            DATE_PART ('week', order_date) = DATE_PART ('week', CURRENT_DATE) - 1
-            AND DATE_PART ('year', order_date) = DATE_PART ('year', CURRENT_DATE)
+            DATE_PART ('week', o.order_date) = DATE_PART ('week', CURRENT_DATE - INTERVAL '1 week')
+            AND DATE_PART ('year', o.order_date) = DATE_PART ('year', CURRENT_DATE)
         GROUP BY
-            city_group
+            c.city_group
     ),
     WeekOverWeekOrders AS (
         SELECT
-            city_group,
-            last_week_orders,
-            LAG (last_week_orders) OVER (
+            c.city_group,
+            COUNT(*) AS last_week_orders,
+            LAG (COUNT(*)) OVER (
+                PARTITION BY
+                    c.city_group
                 ORDER BY
-                    city_group
+                    DATE_PART ('week', o.order_date)
             ) AS prev_week_orders
         FROM
-            LastWeekOrders
+            Orders o
+            JOIN CityGroup c ON o.city = c.city
+        WHERE
+            DATE_PART ('week', o.order_date) IN (
+                DATE_PART ('week', CURRENT_DATE),
+                DATE_PART ('week', CURRENT_DATE - INTERVAL '1 week')
+            )
+            AND DATE_PART ('year', o.order_date) = DATE_PART ('year', CURRENT_DATE)
+        GROUP BY
+            c.city_group,
+            DATE_PART ('week', o.order_date)
     ),
     LastWeekRegistrations AS (
         SELECT
-            city_group,
+            c.city_group,
             COUNT(*) AS last_week_registrations
         FROM
-            users
+            Users u
+            JOIN CityGroup c ON u.city = c.city
         WHERE
-            DATE_PART ('week', registration_date) = DATE_PART ('week', CURRENT_DATE) - 1
-            AND DATE_PART ('year', registration_date) = DATE_PART ('year', CURRENT_DATE)
+            DATE_PART ('week', u.registration_date) = DATE_PART ('week', CURRENT_DATE - INTERVAL '1 week')
+            AND DATE_PART ('year', u.registration_date) = DATE_PART ('year', CURRENT_DATE)
         GROUP BY
-            city_group
+            c.city_group
     ),
     AvgFoodOrdersPerUserLastMonth AS (
         SELECT
-            city_group,
+            c.city_group,
             AVG(
                 CASE
-                    WHEN category = 'FOOD' THEN 1
+                    WHEN o.category = 'FOOD' THEN 1
                     ELSE 0
                 END
             ) AS avg_food_orders_per_user_last_month
         FROM
-            Orders
+            Orders o
+            JOIN CityGroup c ON o.city = c.city
         WHERE
-            order_date >= DATE_TRUNC ('month', CURRENT_DATE - INTERVAL '1 month')
-            AND order_date < DATE_TRUNC ('month', CURRENT_DATE)
+            o.order_date >= DATE_TRUNC ('month', CURRENT_DATE - INTERVAL '1 month')
+            AND o.order_date < DATE_TRUNC ('month', CURRENT_DATE)
         GROUP BY
-            city_group
+            c.city_group
     ),
     LastMonthOldActiveUsers AS (
         SELECT
-            city_group,
+            c.city_group,
             COUNT(DISTINCT u.id) AS last_month_old_active_users
         FROM
-            users u
-            INNER JOIN Orders o ON u.id = o.user_id
+            Users u
+            JOIN Orders o ON u.id = o.user_id
+            JOIN CityGroup c ON u.city = c.city
         WHERE
             o.order_date >= DATE_TRUNC ('month', CURRENT_DATE - INTERVAL '1 month')
             AND o.order_date < DATE_TRUNC ('month', CURRENT_DATE)
             AND u.first_order_date < DATE_TRUNC ('month', CURRENT_DATE - INTERVAL '1 month')
         GROUP BY
-            city_group
+            c.city_group
     )
 SELECT
+    COALESCE(LastWeekOrders.city_group, 'Group1') AS city_group,
+    COALESCE(LastWeekOrders.last_week_orders, 0) AS last_week_orders,
+    COALESCE(WeekOverWeekOrders.prev_week_orders, 0) AS prev_week_orders,
+    COALESCE(LastWeekRegistrations.last_week_registrations, 0) AS last_week_registrations,
     COALESCE(
-        LWO.city_group,
-        WO.city_group,
-        LWR.city_group,
-        AFO.city_group,
-        LMO.city_group
-    ) AS city_group,
-    COALESCE(WO.last_week_orders, 0) AS last_week_orders,
-    COALESCE(WO.last_week_orders - WO.prev_week_orders, 0) AS week_over_week_orders,
-    COALESCE(LWR.last_week_registrations, 0) AS last_week_registrations,
-    COALESCE(AFO.avg_food_orders_per_user_last_month, 0) AS avg_food_orders_per_user_last_month,
-    COALESCE(LMO.last_month_old_active_users, 0) AS last_month_old_active_users
+        AvgFoodOrdersPerUserLastMonth.avg_food_orders_per_user_last_month,
+        0
+    ) AS avg_food_orders_per_user_last_month,
+    COALESCE(
+        LastMonthOldActiveUsers.last_month_old_active_users,
+        0
+    ) AS last_month_old_active_users
 FROM
-    LastWeekOrders WO
-    FULL JOIN WeekOverWeekOrders WOO ON WO.city_group = WOO.city_group
-    FULL JOIN LastWeekRegistrations LWR ON WO.city_group = LWR.city_group
-    FULL JOIN AvgFoodOrdersPerUserLastMonth AFO ON WO.city_group = AFO.city_group
-    FULL JOIN LastMonthOldActiveUsers LMO ON WO.city_group = LMO.city_group
+    LastWeekOrders
+    FULL JOIN WeekOverWeekOrders ON LastWeekOrders.city_group = WeekOverWeekOrders.city_group
+    FULL JOIN LastWeekRegistrations ON LastWeekOrders.city_group = LastWeekRegistrations.city_group
+    FULL JOIN AvgFoodOrdersPerUserLastMonth ON LastWeekOrders.city_group = AvgFoodOrdersPerUserLastMonth.city_group
+    FULL JOIN LastMonthOldActiveUsers ON LastWeekOrders.city_group = LastMonthOldActiveUsers.city_group
 ORDER BY
-    city_group;
+    LastWeekOrders.city_group;
